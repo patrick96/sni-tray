@@ -1,3 +1,5 @@
+#pragma once
+
 #include <gio/gio.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,13 +32,15 @@ typedef struct ItemData {
 	Pixmap *att_pixmap;
 	gchar *movie_name;
 	//TODO tooltip icon name, icon pixmap, title, description
+
 	gboolean ismenu;
-	GVariant *obj_path;
+	GVariant *menu;
 } ItemData;
 
-//use g_list_length(list) to find number of elements
-GList *list;
+extern GList *list;
 
 
+
+void call_method(int click_type, int event_x, int event_y, int root_x, int root_y);
 gchar *find_icon(gchar *icon, gint size, gchar *theme);
 gchar *get_icon_theme();

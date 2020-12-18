@@ -1,24 +1,15 @@
+#pragma once
+
 #include <xcb/xcb.h>
-#include <cairo-xcb.h>
+#include <cairo/cairo-xcb.h>
 #include <gio/gio.h>
 #include "libgwater/xcb/libgwater-xcb.h"
 
-xcb_connection_t *c;
-xcb_window_t w;
-xcb_visualtype_t *visual;
-xcb_colormap_t colormap;
-uint8_t depth;
-int screen_num;
-
-xcb_rectangle_t win_dim;
-cairo_t *cr;
-cairo_surface_t *surface;
+extern xcb_connection_t *c;
 
 typedef struct {
 	uint8_t r, g, b, a;
 } rgba_t;
-
-rgba_t bg;
 
 enum click_type {
 	PRIMARY = 1,

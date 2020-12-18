@@ -4,7 +4,6 @@
 #include <xcb/xcb_ewmh.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_aux.h>
-#include <cairo-xcb.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include "libgwater/xcb/libgwater-xcb.h"
 #include "draw.h"
@@ -19,6 +18,19 @@
 #include <unistd.h>
 
 static int size = 24;
+
+xcb_connection_t *c;
+xcb_window_t w;
+xcb_visualtype_t *visual;
+xcb_colormap_t colormap;
+uint8_t depth;
+int screen_num;
+
+xcb_rectangle_t win_dim;
+cairo_t *cr;
+cairo_surface_t *surface;
+
+rgba_t bg;
 
 xcb_visualtype_t* visual_type(xcb_screen_t* screen, int match_depth) {
 	xcb_depth_iterator_t depth_iter = xcb_screen_allowed_depths_iterator(screen);

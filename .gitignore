@@ -57,3 +57,6 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+.gdb_history
+compile_commands.json

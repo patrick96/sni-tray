@@ -1,4 +1,5 @@
 #include "gdbus.h"
+#include <stdbool.h>
 #include "draw.h"
 static void on_watch_sig_changed(GDBusProxy *p, gchar *sender_name, gchar *signal_name, GVariant *param, gpointer user_data);
 static void on_item_sig_changed(GDBusProxy *p, gchar *sender_name, gchar *signal_name, GVariant *param, gpointer user_data);
@@ -21,25 +22,31 @@ void call_method(int click_type, int event_x, int event_y, int root_x, int root_
 	printf("Event %d at (%d, %d), root (%d, %d)\n", click_type, event_x, event_y, root_x, root_y);
 	ItemData *i = g_list_nth_data(list, event_x / size);
 	printf("Interacted with %s\n", i->id);
+    GVariant *res = NULL;
+    GError *error = NULL;
 	// find specific application
 	// call org.kde.StatusNotifierItem.*
 	switch(click_type) {
 		case PRIMARY:
-			g_dbus_proxy_call_sync(i->proxy, "org.kde.StatusNotifierItem.Activate",
-				g_variant_new("(ii)", root_x, root_y), G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
+			res = g_dbus_proxy_call_sync(i->proxy, "org.kde.StatusNotifierItem.Activate",
+				g_variant_new("(ii)", root_x, root_y), G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 			break;
 		case SECONDARY:
-			g_dbus_proxy_call_sync(i->proxy, "org.kde.StatusNotifierItem.SecondaryActivate",
-				g_variant_new("(ii)", root_x, root_y), G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
+			res = g_dbus_proxy_call_sync(i->proxy, "org.kde.StatusNotifierItem.SecondaryActivate",
+				g_variant_new("(ii)", root_x, root_y), G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 			break;
 		case CONTEXT:
-			g_dbus_proxy_call_sync(i->proxy, "org.kde.StatusNotifierItem.ContextMenu",
-				g_variant_new("(ii)", root_x, root_y), G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
+			res = g_dbus_proxy_call_sync(i->proxy, "org.kde.StatusNotifierItem.ContextMenu",
+				g_variant_new("(ii)", root_x, root_y), G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 			break;
 		case SCROLL:
 		default:
 			printf("lel\n");
 	}
+
+    if (error) {
+        fprintf(stderr, "call_method: error: %s\n", error->message);
+    }
 }
 static void print_data(ItemData *data) {
 	printf("dbus_name: %s\n", data->dbus_name);
@@ -53,6 +60,8 @@ static void print_data(ItemData *data) {
 	printf("overlay_name: %s\n", data->overlay_name);
 	printf("att_name: %s\n", data->att_name);
 	printf("movie_name: %s\n", data->movie_name);
+    printf("ItemIsMenu: %s\n", data->ismenu? "true" : "false");
+    printf("Menu: %s\n", g_variant_get_string(data->menu, NULL));
 }
 static void on_watch_sig_changed(GDBusProxy *p, gchar *sender_name, gchar *signal_name,
 		GVariant *param, gpointer user_data) {
@@ -86,22 +95,48 @@ static void on_watch_sig_changed(GDBusProxy *p, gchar *sender_name, gchar *signa
 	}
 	draw_tray();
 }
-static gchar * get_property_string(GDBusProxy *p, gchar *prop) {
-	gchar *retstr = NULL;
-	GVariant *val = g_dbus_proxy_call_sync(p, "org.freedesktop.DBus.Properties.Get",
-			g_variant_new("(ss)", "org.kde.StatusNotifierItem", prop), G_DBUS_CALL_FLAGS_NONE,
-			-1, NULL, NULL);
-	if(val != NULL) {
+
+static GVariant *get_property(GDBusProxy *p, gchar *prop) {
+    GError *error = NULL;
+    GVariant *val = g_dbus_proxy_call_sync(
+        p, "org.freedesktop.DBus.Properties.Get",
+        g_variant_new("(ss)", "org.kde.StatusNotifierItem", prop),
+        G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    if (val != NULL) {
 		GVariant *variant = NULL;
 		g_variant_get(val, "(v)", &variant);
-		if(variant != NULL) {
-			retstr = g_variant_dup_string(variant, NULL);
-			printf("%s: %s\n", prop, retstr);
-			g_variant_unref(variant);
-		}
-		g_variant_unref(val);
-	}
-	return retstr;
+        g_variant_unref(val);
+        return variant;
+    } else {
+        fprintf(stderr, "get_property: Couldn't get '%s': '%s'\n", prop,
+                error->message);
+        return NULL;
+    }
+}
+
+static gchar * get_property_string(GDBusProxy *p, gchar *prop) {
+    gchar *retstr = NULL;
+    GVariant *variant = get_property(p, prop);
+    if (variant != NULL) {
+        retstr = g_variant_dup_string(variant, NULL);
+        printf("%s: %s\n", prop, retstr);
+        g_variant_unref(variant);
+    }
+    return retstr;
+}
+
+static gboolean get_property_bool(GDBusProxy *p, gchar *prop) {
+    GVariant *variant = get_property(p, prop);
+    if(variant != NULL) {
+        double ret = g_variant_get_boolean(variant);
+        printf("%s: %s\n", prop, ret? "true" : "false");
+        g_variant_unref(variant);
+        return ret;
+    }
+    else {
+        fprintf(stderr, "get_property_bool: Couldn't get variant\n");
+        return false;
+    }
 }
 
 static inline void ensure_icon_path(GDBusProxy *p, gchar *icon, gchar **output) {
@@ -109,7 +144,12 @@ static inline void ensure_icon_path(GDBusProxy *p, gchar *icon, gchar **output) 
 	//if((icon != NULL) && (*output == NULL)) {
 	if(icon != NULL) {
 		*output = find_icon(icon, size, theme);
-		printf("%s\n", *output);
+        if (*output) {
+            printf("%s\n", *output);
+        }
+        else {
+            printf("No icon found\n");
+        }
 	}
 }
 static inline void apply_cached_prop_pixmap(GDBusProxy *p, const gchar *name, gpointer output) {
@@ -155,10 +195,13 @@ static void on_item_sig_changed(GDBusProxy *p, gchar *sender_name, gchar *signal
 		printf("New overlay icon name: %s\n", data->overlay_name);
 	}
 	else if(g_strcmp0(signal_name, "NewToolTip") == 0) {
-		/*
-		g_variant_get(item, "(&s)", &prop);
-		printf("New tooltip: %s\n", prop);
-		*/
+        gchar *icon_name = NULL;
+        GVariant *icon = NULL;
+        gchar *title = NULL;
+        gchar *text = NULL;
+        GVariant *variant = get_property(p, "ToolTip");
+		g_variant_get(variant, "(s@a(iiay)ss)", &icon_name, &icon, &title, &text);
+		printf("New tooltip: %s, %s, %s\n", icon_name, title, text);
 	}
 	else if(g_strcmp0(signal_name, "NewStatus") == 0) {
 		data->status = get_property_string(p, "Status");
@@ -195,9 +238,10 @@ static void init_item_data(const gchar *name, const gchar *path, ItemData *data)
 	data->overlay_name = get_property_string(proxy, "OverlayIconName");
 	data->att_name = get_property_string(proxy, "AttentionIconName");
 	data->movie_name = get_property_string(proxy, "AttentionMovieName");
+    data->ismenu = get_property_bool(proxy, "ItemIsMenu");
+    data->menu = get_property(proxy, "Menu");
 	//tooltip
-	//print_data(data);
-
+    print_data(data);
 }
 
 static void watcher_appeared_handler(GDBusConnection *c, const gchar *name, const gchar *sender, gpointer user_data) {

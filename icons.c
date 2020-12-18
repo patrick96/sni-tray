@@ -18,6 +18,7 @@ static gchar *get_theme_location(const gchar *theme);
 
 //TODO or have global theme in struct?
 gchar *find_icon(gchar *icon, gint size, gchar *theme) {
+    printf("find_icon: icon: %s, theme: %s\n", icon, theme);
 	gchar *filename = find_icon_helper(icon, size, theme);
 	if(filename != NULL)
 		return filename;
@@ -39,6 +40,7 @@ static gchar *find_icon_helper(gchar *icon, gint size, gchar *theme) {
 		fprintf(stderr, "Error finding theme %s\n", theme);
 		return NULL;
 	}
+    printf("find_icon_helper: theme_path: %s\n", theme_path);
 	gchar *theme_index = g_build_filename(theme_path, "index.theme", NULL);
 	if(g_key_file_load_from_file(kf, theme_index, G_KEY_FILE_NONE, &err)) {
 		filename = lookup_icon(kf, icon, size, theme_path);
