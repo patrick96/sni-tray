@@ -58,5 +58,6 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+sni-info
 .gdb_history
 compile_commands.json
