@@ -1,0 +1,3 @@
+DBus XML:
+
+https://stackoverflow.com/questions/54118348/what-gdbus-function-returns-a-list-of-child-object-nodes

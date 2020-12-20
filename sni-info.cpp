@@ -1,18 +1,27 @@
 #include <gio/gio.h>
 #include <unistd.h>
 
+#include <functional>
 #include <iostream>
 #include <map>
 #include <string>
+using namespace std::string_literals;
 
-static const std::string host_base{"org.freedesktop.StatusNotifierHost-"};
-static const std::string watcher{"org.kde.StatusNotifierWatcher"};
-static const std::string watcher_path{"/StatusNotifierWatcher"};
-static const std::string register_method{"RegisterStatusNotifierHost"};
-static const std::string registerd_items_prop{"RegisteredStatusNotifierItems"};
+static const auto kde_prefix{"org.kde."s};
+static const auto freedesktop_prefix{"org.freedesktop."s};
 
-static const std::string sig_item_register{"StatusNotifierItemRegistered"};
-static const std::string sig_item_unregister{"StatusNotifierItemUnregistered"};
+static const auto item_interface{"StatusNotifierItem"s};
+
+static const auto path_item{"/StatusNotifierItem"s};
+
+static const auto host_base{"org.freedesktop.StatusNotifierHost-"s};
+static const auto watcher{"org.kde.StatusNotifierWatcher"s};
+static const auto watcher_path{"/StatusNotifierWatcher"s};
+static const auto register_method{"RegisterStatusNotifierHost"s};
+static const auto registerd_items_prop{"RegisteredStatusNotifierItems"s};
+
+static const auto sig_item_register{"StatusNotifierItemRegistered"s};
+static const auto sig_item_unregister{"StatusNotifierItemUnregistered"s};
 static std::string host;
 
 class dbus_owner {
@@ -54,25 +63,34 @@ static void deregister_item(const std::string& service) {
   items.erase(service);
 }
 
-static void register_item(const std::string& service, const SNItem&& item) {
+static void on_item_sig_changed(GDBusProxy* p, gchar* sender_name,
+                                gchar* signal_name, GVariant* param,
+                                gpointer user_data) {
+  std::string sig{signal_name};
+  printf("Item Changed Signal received: sender_name: %s, signal_name: %s\n",
+         sender_name, signal_name);
+}
+
+static void register_item(GDBusProxy* p, const std::string& service,
+                          const SNItem&& item) {
   items[service] = std::move(item);
+
+  g_signal_connect(proxy, "g-signal", G_CALLBACK(on_item_sig_changed), nullptr);
 }
 
 static std::string get_property_string(GDBusProxy* p, const std::string& prop) {
   auto variant = g_dbus_proxy_get_cached_property(p, prop.c_str());
+
+  if (variant == nullptr) {
+    return "";
+  }
+
   std::string str{g_variant_get_string(variant, nullptr)};
   g_variant_unref(variant);
   return str;
 }
 
-static SNItem load_item(const std::string& service) {
-  std::string name = service.substr(0, service.find('/'));
-
-  GDBusProxy* p = g_dbus_proxy_new_for_bus_sync(
-      G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_NONE, nullptr,
-      name.c_str(), "/StatusNotifierItem", "org.kde.StatusNotifierItem",
-      nullptr, nullptr);
-
+static SNItem load_item(GDBusProxy* p) {
   SNItem item;
   item.cat = get_property_string(p, "Category");
   item.id = get_property_string(p, "Id");
@@ -92,6 +110,154 @@ static void print_items() {
   }
 }
 
+/**
+ * Searches on the given bus name for the StatusNotifierItem interface
+ *
+ * Returns (object path, iface name)
+ */
+static std::pair<std::string, std::string> find_interface(
+    GDBusConnection* c, const std::string& bus_name) {
+  std::function<std::string(const std::string&, const std::string&)> finder =
+      [&c, &bus_name, &finder](const std::string& iface_name,
+                               const std::string& path) -> std::string {
+    GVariant* result = g_dbus_connection_call_sync(
+        c, bus_name.c_str(), path.empty() ? "/" : path.c_str(),
+        "org.freedesktop.DBus.Introspectable", "Introspect", nullptr,
+        G_VARIANT_TYPE("(s)"), G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, nullptr);
+
+    const gchar* xml_data;
+    g_variant_get(result, "(&s)", &xml_data);
+
+    struct node_wrapper {
+      ~node_wrapper() {
+        if (node) {
+          g_dbus_node_info_unref(node);
+          node = nullptr;
+        }
+      }
+
+      GDBusNodeInfo* node = nullptr;
+    };
+
+    node_wrapper wrapper;
+    GError* error = nullptr;
+    auto node = g_dbus_node_info_new_for_xml(xml_data, &error);
+    g_variant_unref(result);
+    wrapper.node = node;
+
+    if (!node) {
+      throw std::runtime_error(error->message);
+    }
+
+    for (int i = 0; node->interfaces[i]; i++) {
+      GDBusInterfaceInfo* iface = node->interfaces[i];
+
+      if (iface_name == iface->name) {
+        std::cout << "Found Interface in " << path << std::endl;
+        return path;
+      }
+    }
+
+    for (int i = 0; node->nodes[i]; i++) {
+      GDBusNodeInfo* child = node->nodes[i];
+
+      auto child_path = finder(iface_name, path + '/' + child->path);
+      if (!child_path.empty()) {
+        return child_path;
+      }
+    }
+
+    return "";
+  };
+
+  auto freedesktop_iface = freedesktop_prefix + item_interface;
+  auto kde_iface = kde_prefix + item_interface;
+
+  std::string path = finder(freedesktop_iface, "");
+
+  if (!path.empty()) {
+    return {path, freedesktop_iface};
+  }
+
+  path = finder(kde_iface, "");
+
+  if (!path.empty()) {
+    return {path, kde_iface};
+  }
+
+  throw std::runtime_error("StatusNotifierItem interface not found");
+}
+
+static GDBusProxy* get_proxy(const std::string& bus_name,
+                             const std::string& path,
+                             const std::string& iface) {
+  auto p = g_dbus_proxy_new_for_bus_sync(
+      G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_NONE, nullptr, bus_name.c_str(),
+      path.c_str(), iface.c_str(), nullptr, nullptr);
+
+  if (p) {
+    auto variant = g_dbus_proxy_get_cached_property(p, "Id");
+
+    if (!variant) {
+      g_object_unref(p);
+      return nullptr;
+    }
+  }
+
+  return p;
+}
+
+/**
+ * Initializes a new instance of StatusNotifierItem.
+ *
+ * The spec states that
+ *
+ * > Each instance of StatusNotifierItem must provide an object called
+ * > StatusNotifierItem
+ *
+ * However not all implementations follow this.
+ *
+ * For example libappindicator provides the org.kde.StatusNotifierItem
+ * interface at `/org/ayatana/NotificationItem/app-id` where app-id is
+ * specific to the application.
+ *
+ * Also, according to the spec, the StatusNotifierItem interface is called
+ * org.freedesktop.StatusNotifierItem, but most implementations will use
+ * org.kde.StatusNotifierItem
+ *
+ * This will try its best to support all these variants
+ */
+static void init_item(GDBusConnection* c, const std::string& bus_name) {
+  GDBusProxy* p =
+      get_proxy(bus_name, path_item, freedesktop_prefix + item_interface);
+
+  if (!p) {
+    p = get_proxy(bus_name, path_item, kde_prefix + item_interface);
+  }
+
+  /*
+   * If we can't find the StatusNotifierItem interface at well-known paths, we
+   * search the entire node tree for the interface.
+   */
+  if (!p) {
+    std::string path;
+    std::string iface;
+
+    std::cout << "Could not find StatusNotifierItem interface at well-known "
+                 "path. Searching all objects"
+              << std::endl;
+    std::tie(path, iface) = find_interface(c, bus_name);
+    p = get_proxy(bus_name, path, iface);
+  }
+
+  if (!p) {
+    throw std::runtime_error("Could not create proxy for StatusNotifierItem");
+  }
+
+  register_item(p, bus_name, std::move(load_item(p)));
+  g_object_unref(p);
+}
+
 static void on_watch_sig_changed(GDBusProxy* p, gchar* sender_name,
                                  gchar* signal_name, GVariant* param,
                                  gpointer user_data) {
@@ -104,9 +270,7 @@ static void on_watch_sig_changed(GDBusProxy* p, gchar* sender_name,
   if (sig == sig_item_register) {
     g_variant_get(param, "(&s)", &item);
     std::cout << "New Item Registered: " << item << std::endl;
-    std::string service{item};
-    // TODO add signal handler for this item
-    register_item(service, std::move(load_item(service)));
+    init_item(g_dbus_proxy_get_connection(p), std::string{item});
   } else if (sig == sig_item_unregister) {
     g_variant_get(param, "(&s)", &item);
     std::cout << "Item Unregistered: " << item << std::endl;
@@ -134,8 +298,8 @@ static void watcher_appeared_handler(GDBusConnection* c, const gchar* name,
   GVariant* content;
   while ((content = g_variant_iter_next_value(it))) {
     const gchar* it_name = g_variant_get_string(content, NULL);
-    std::string service{it_name};
-    register_item(service, std::move(load_item(service)));
+    std::cout << "Registered Item: " << it_name << std::endl;
+    init_item(c, std::string{it_name});
   }
   g_variant_iter_free(it);
   g_variant_unref(items);
