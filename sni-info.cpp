@@ -63,20 +63,19 @@ static void deregister_item(const std::string& service) {
   items.erase(service);
 }
 
-static void on_item_sig_changed(GDBusProxy* p, gchar* sender_name,
-                                gchar* signal_name, GVariant* param,
-                                gpointer user_data) {
-  std::string sig{signal_name};
-  printf("Item Changed Signal received: sender_name: %s, signal_name: %s\n",
-         sender_name, signal_name);
+static SNItem& get_item(const std::string& service) {
+  return items[service];
 }
 
-static void register_item(GDBusProxy* p, const std::string& service,
-                          const SNItem&& item) {
-  items[service] = std::move(item);
-
-  g_signal_connect(proxy, "g-signal", G_CALLBACK(on_item_sig_changed), nullptr);
+static void print_items() {
+  for (const auto& p : items) {
+    const auto& i = p.second;
+    std::cout << i.id << ": cat: " << i.cat << ", title: " << i.title
+              << ", status: " << i.status << ", iconName: " << i.icon_name
+              << std::endl;
+  }
 }
+
 
 static std::string get_property_string(GDBusProxy* p, const std::string& prop) {
   auto variant = g_dbus_proxy_get_cached_property(p, prop.c_str());
@@ -90,6 +89,42 @@ static std::string get_property_string(GDBusProxy* p, const std::string& prop) {
   return str;
 }
 
+static void on_item_sig_changed(GDBusProxy* p, gchar* sender_name,
+                                gchar* signal_name, GVariant* param,
+                                gpointer user_data) {
+  std::string sig{signal_name};
+  printf("Item Changed Signal received: sender_name: %s, signal_name: %s\n",
+         sender_name, signal_name);
+
+  SNItem& item = get_item(sender_name);
+
+  if (sig == "NewTitle") {
+    item.title = get_property_string(p, "Title");
+  } else if (sig == "NewIcon") {
+    item.icon_name = get_property_string(p, "IconName");
+  } else if (sig == "NewAttentionIcon") {
+    // TODO
+  } else if (sig == "NewOverlayIcon") {
+    // TODO
+  } else if (sig == "NewToolTip") {
+    // TODO
+  } else if (sig == "NewStatus") {
+    item.status = get_property_string(p, "Status");
+  } else {
+    printf("Unknown item signal received: sender_name: %s, signal_name: %s\n",
+           sender_name, signal_name);
+  }
+
+  print_items();
+}
+
+static void register_item(GDBusProxy* p, const std::string& service,
+                          const SNItem&& item) {
+  items[service] = std::move(item);
+
+  g_signal_connect(proxy, "g-signal", G_CALLBACK(on_item_sig_changed), nullptr);
+}
+
 static SNItem load_item(GDBusProxy* p) {
   SNItem item;
   item.cat = get_property_string(p, "Category");
@@ -99,15 +134,6 @@ static SNItem load_item(GDBusProxy* p) {
   item.icon_name = get_property_string(p, "IconName");
 
   return item;
-}
-
-static void print_items() {
-  for (const auto& p : items) {
-    const auto& i = p.second;
-    std::cout << i.id << ": cat: " << i.cat << ", title: " << i.title
-              << ", status: " << i.status << ", iconName: " << i.icon_name
-              << std::endl;
-  }
 }
 
 /**
