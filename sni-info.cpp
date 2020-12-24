@@ -46,12 +46,23 @@ class dbus_owner {
   guint id{0};
 };
 
+struct SNI_tooltip {
+  std::string icon_name;
+  std::string title;
+  std::string text;
+};
+
 struct SNItem {
+  SNI_tooltip tooltip;
   std::string cat;
   std::string id;
   std::string title;
   std::string status;
   std::string icon_name;
+  std::string overlay_icon_name;
+  std::string attention_icon_name;
+  std::string attention_movie_name;
+  uint32_t window_id;
 };
 
 static GMainLoop* loop;
@@ -63,22 +74,41 @@ static void deregister_item(const std::string& service) {
   items.erase(service);
 }
 
-static SNItem& get_item(const std::string& service) {
-  return items[service];
+static bool has_item(const std::string& service) {
+  return items.find(service) != items.end();
 }
+
+static SNItem& get_item(const std::string& service) { return items[service]; }
 
 static void print_items() {
   for (const auto& p : items) {
     const auto& i = p.second;
-    std::cout << i.id << ": cat: " << i.cat << ", title: " << i.title
-              << ", status: " << i.status << ", iconName: " << i.icon_name
-              << std::endl;
+    std::cout << p.first << ": id: " << i.id << ": cat: " << i.cat
+              << ", title: " << i.title << ", windowId: " << std::hex
+              << i.window_id << std::dec << ", status: " << i.status
+              << ", iconName: " << i.icon_name
+              << ", overlayIconName: " << i.overlay_icon_name
+              << ", attentionIconName: " << i.attention_icon_name
+              << ", attentionMovieName: " << i.attention_movie_name
+              << ", tooltip: {icon: " << i.tooltip.title
+              << ", title: " << i.tooltip.icon_name
+              << ", text: " << i.tooltip.text << "}" << std::endl;
   }
 }
 
+static GVariant* get_property(GDBusProxy* p, const std::string& prop) {
+  GVariant* v = g_dbus_proxy_get_cached_property(p, prop.c_str());
+
+  if (!v) {
+    std::cout << "Could not load property " << prop << " for "
+              << g_dbus_proxy_get_name(p) << std::endl;
+  }
+
+  return v;
+}
 
 static std::string get_property_string(GDBusProxy* p, const std::string& prop) {
-  auto variant = g_dbus_proxy_get_cached_property(p, prop.c_str());
+  auto variant = get_property(p, prop);
 
   if (variant == nullptr) {
     return "";
@@ -89,12 +119,65 @@ static std::string get_property_string(GDBusProxy* p, const std::string& prop) {
   return str;
 }
 
+static uint32_t get_property_int(GDBusProxy* p, const std::string& prop) {
+  auto variant = get_property(p, prop);
+
+  if (variant == nullptr) {
+    return -1;
+  }
+
+  uint32_t num;
+
+  if (g_variant_is_of_type(variant, G_VARIANT_TYPE_UINT32)) {
+    num = g_variant_get_uint32(variant);
+  } else if (g_variant_is_of_type(variant, G_VARIANT_TYPE_INT32)) {
+    num = g_variant_get_int32(variant);
+  } else {
+    printf("Non-integer property found: %s, actual type: %s\n", prop.c_str(),
+           g_variant_get_type_string(variant));
+    return -1;
+  }
+
+  g_variant_unref(variant);
+  return num;
+}
+
+static SNI_tooltip get_tooltip(GDBusProxy* p) {
+  auto variant = get_property(p, "ToolTip");
+
+  SNI_tooltip tooltip;
+
+  if (variant == nullptr) {
+    std::cout << "Couldn't load tooltip for: " << g_dbus_proxy_get_name(p)
+              << std::endl;
+    return tooltip;
+  }
+
+  const gchar* icon_name = nullptr;
+  const gchar* title = nullptr;
+  const gchar* text = nullptr;
+  g_variant_get(variant, "(&s@a(iiay)&s&s)", &icon_name, nullptr, &title,
+                &text);
+
+  tooltip.icon_name = std::string{icon_name};
+  tooltip.title = std::string{title};
+  tooltip.text = std::string{text};
+
+  return tooltip;
+}
+
 static void on_item_sig_changed(GDBusProxy* p, gchar* sender_name,
                                 gchar* signal_name, GVariant* param,
                                 gpointer user_data) {
   std::string sig{signal_name};
   printf("Item Changed Signal received: sender_name: %s, signal_name: %s\n",
          sender_name, signal_name);
+
+  if (!has_item(sender_name)) {
+    printf("Item Changed Signal received from non-registered item: %s\n",
+           sender_name);
+    return;
+  }
 
   SNItem& item = get_item(sender_name);
 
@@ -103,11 +186,12 @@ static void on_item_sig_changed(GDBusProxy* p, gchar* sender_name,
   } else if (sig == "NewIcon") {
     item.icon_name = get_property_string(p, "IconName");
   } else if (sig == "NewAttentionIcon") {
-    // TODO
+    item.attention_icon_name = get_property_string(p, "AttentionIconName");
+    item.attention_movie_name = get_property_string(p, "AttentionMovieName");
   } else if (sig == "NewOverlayIcon") {
-    // TODO
+    item.overlay_icon_name = get_property_string(p, "OverlayIconName");
   } else if (sig == "NewToolTip") {
-    // TODO
+    item.tooltip = get_tooltip(p);
   } else if (sig == "NewStatus") {
     item.status = get_property_string(p, "Status");
   } else {
@@ -132,6 +216,11 @@ static SNItem load_item(GDBusProxy* p) {
   item.title = get_property_string(p, "Title");
   item.status = get_property_string(p, "Status");
   item.icon_name = get_property_string(p, "IconName");
+  item.overlay_icon_name = get_property_string(p, "OverlayIconName");
+  item.attention_icon_name = get_property_string(p, "AttentionIconName");
+  item.attention_movie_name = get_property_string(p, "AttentionMovieName");
+  item.window_id = get_property_int(p, "WindowId");
+  item.tooltip = get_tooltip(p);
 
   return item;
 }
